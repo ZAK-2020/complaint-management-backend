@@ -1,16 +1,25 @@
 package com.system.complaints.controller;
 
-import com.system.complaints.model.*;
-import com.system.complaints.service.*;
+import com.system.complaints.dto.VisitorSummaryDTO;
+import com.system.complaints.model.Bank;
+import com.system.complaints.model.Branch;
+import com.system.complaints.model.City;
+import com.system.complaints.model.ComplaintType;
+import com.system.complaints.model.Status;
+import com.system.complaints.model.UserType;
+import com.system.complaints.repository.UserRepository;
+import com.system.complaints.service.BankService;
+import com.system.complaints.service.BranchService;
+import com.system.complaints.service.CityService;
+import com.system.complaints.service.ComplaintTypeService;
+import com.system.complaints.service.StatusService;
+import com.system.complaints.service.VisitorService;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
-import com.system.complaints.repository.UserRepository;
-import com.system.complaints.model.AppUser;
 
-
-import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -36,32 +45,10 @@ public class DataController {
     private ComplaintTypeService complaintTypeService;
 
     @Autowired
-    private StaffRemarkService staffRemarkService;
-
-    @Autowired
-    private DispatchStatusService dispatchStatusService;
-
-    @Autowired
-    private PartsService partsService;
-
-    @Autowired
-    private ReceivingStatusService receivingStatusService;
-
-    @Autowired
-    private HardwareStaffService hardwareStaffService;
-
-    @Autowired
-    private HardwareStatusService hardwareStatusService;
-
-    @Autowired
-    private LabStatusService labStatusService;
-
-    @Autowired
-    private BranchService branchService; // Inject BranchService
+    private BranchService branchService;
 
     @Autowired
     private UserRepository userRepository;
-
 
     @GetMapping("/banks")
     public List<Bank> getAllBanks() {
@@ -69,8 +56,8 @@ public class DataController {
     }
 
     @GetMapping("/visitors")
-    public List<Visitor> getAllVisitors() {
-        return visitorService.getAllVisitors();
+    public List<VisitorSummaryDTO> getAllVisitors(@RequestParam(required = false) String city) {
+        return visitorService.getVisitorSummariesByCity(city);
     }
 
     @GetMapping("/cities")
@@ -88,60 +75,11 @@ public class DataController {
         return statusService.getAllStatuses();
     }
 
-    @GetMapping("/staff-remarks")
-    public List<StaffRemark> getAllStaffRemarks() {
-        return staffRemarkService.getAllRemarks();
-    }
-
-        @GetMapping("/dispatch-status")
-    public List<DispatchStatus> getAllDispatchStatuses() {
-        return dispatchStatusService.getAllDispatchStatuses();
-    }
-
-    @GetMapping("/receiving-status")
-    public List<ReceivingStatus> getAllReceivingStatuses() {
-        return receivingStatusService.getAllReceivingStatuses();
-    }
-
-    @GetMapping("/hardware-staff")
-    public List<HardwareStaff> getAllHardwareStaff() {
-        return hardwareStaffService.getAllHardwareStaff();
-    }
-
-    @GetMapping("/parts")
-    public List<Parts> getAllParts() {
-        return partsService.getAllParts();
-    }
-
-    @GetMapping("/hardware-status")
-    public List<HardwareStatus> getAllHardwareStatuses() {
-        return hardwareStatusService.getAllHardwareStatuses();
-    }
-
-    @GetMapping("/lab-status")
-    public List<LabStatus> getAllLabStatuses() {
-        return labStatusService.getAllLabStatuses();
-    }
-
-    // New endpoint to fetch all branches
     @GetMapping("/branches")
-    public List<Branch> getAllBranches() {
-        return branchService.getAllBranches();
+    public List<Branch> getAllBranches(@RequestParam(required = false) String bank) {
+        return branchService.getBranchesByBank(bank);
     }
 
-    @GetMapping("/users")
-    public List<Map<String, Object>> getAllUsers() {
-        return userRepository.findAll().stream().map(user -> {
-            Map<String, Object> map = new LinkedHashMap<>();
-            map.put("id", user.getId());
-            map.put("username", user.getUsername());
-            map.put("visitor_id", user.getVisitor() != null ? user.getVisitor().getId() : null);
-            map.put("platformType", user.getPlatformType());
-            map.put("user_type", user.getUserType());
-            map.put("role", user.getRole().getName()); // Only the role name
-            return map;
-        }).collect(Collectors.toList());
-    }
     @GetMapping("/lab-engineers")
     public List<Map<String, Object>> getLabEngineers() {
         return userRepository.findAll().stream()
@@ -154,5 +92,4 @@ public class DataController {
                 })
                 .collect(Collectors.toList());
     }
-
 }

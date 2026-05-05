@@ -14,7 +14,14 @@ public class BranchService {
     private BranchRepository branchRepository;
 
     public List<Branch> getAllBranches() {
-        return branchRepository.findAll();
+        return branchRepository.findAllByOrderByBankAscBranchCodeAscBranchNameAsc();
+    }
+
+    public List<Branch> getBranchesByBank(String bank) {
+        if (bank == null || bank.trim().isEmpty()) {
+            return getAllBranches();
+        }
+        return branchRepository.findByBankIgnoreCaseOrderByBranchCodeAscBranchNameAsc(bank.trim());
     }
 
     public Branch saveBranch(Branch branch) {

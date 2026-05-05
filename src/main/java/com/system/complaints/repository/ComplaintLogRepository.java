@@ -5,12 +5,10 @@ import com.system.complaints.model.ComplaintLog;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.Modifying;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.stereotype.Repository;
-import org.springframework.transaction.annotation.Transactional;
-import org.springframework.data.repository.query.Param;
 import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
+import org.springframework.data.repository.query.Param;
 import java.sql.Date;
 import java.util.List;
 import java.util.Optional;
@@ -34,34 +32,11 @@ public interface ComplaintLogRepository extends JpaRepository<ComplaintLog, Long
     // In ComplaintLogRepository
     List<ComplaintLog> findByComplaintIdIn(List<String> complaintIds);
 
-    // Find complaints by status
-    List<ComplaintLog> findByComplaintStatus(String complaintStatus);
-
-    // Find complaints by status not equal
-    List<ComplaintLog> findByComplaintStatusNot(String complaintStatus);
-
-    // Find complaints by date and status
-    List<ComplaintLog> findByDateAndComplaintStatus(Date date, String complaintStatus);
-
-    // Find complaints by visitor's ID
-    List<ComplaintLog> findByVisitorId(Long visitorId);
-
-    // Find complaints by visitor's ID Null
-    List<ComplaintLog> findByVisitorIdIsNullAndComplaintStatus(String complaintStatus);
-
-    List<ComplaintLog> findByVisitorIdIsNullAndIsMarkedInPoolTrue();
-
     // Find complaints by visitor's ID
     List<ComplaintLog> findByComplaintStatusAndScheduleDateBefore(String complaintStatus, Date date);
 
     // Find a complaint by its complaintId
     Optional<ComplaintLog> findByComplaintId(String complaintId);
-
-    // Update job card path for a complaint
-    @Modifying
-    @Transactional
-    @Query("UPDATE ComplaintLog c SET c.jobCardPath = :jobCardPath WHERE c.id = :id")
-    int updateJobCardPath(@Param("id") Long id, @Param("jobCardPath") String jobCardPath);
 
     // Find similar complaints within 15 days of closedDate
     @Query("SELECT c FROM ComplaintLog c WHERE " +
@@ -413,6 +388,67 @@ public interface ComplaintLogRepository extends JpaRepository<ComplaintLog, Long
             nativeQuery = true
     )
     int countClosedToday();
+
+    @Query(value = """
+            SELECT
+                COALESCE(SUM(CASE WHEN cl.date = CURDATE() THEN 1 ELSE 0 END), 0) AS today_logged,
+                COALESCE(SUM(CASE
+                    WHEN LOWER(TRIM(cl.complaint_status)) = 'closed'
+                     AND cl.date = CURDATE()
+                     AND cl.closed_date = CURDATE()
+                    THEN 1 ELSE 0 END), 0) AS same_day_closed,
+                COALESCE(SUM(CASE
+                    WHEN LOWER(TRIM(cl.complaint_status)) = 'hardware picked'
+                     AND cl.date = CURDATE()
+                     AND cl.hardware_picked_date = CURDATE()
+                    THEN 1 ELSE 0 END), 0) AS hardware_picked_today,
+                COALESCE(SUM(CASE
+                    WHEN LOWER(TRIM(cl.complaint_status)) = 'wait for approval'
+                     AND cl.date = CURDATE()
+                     AND cl.quotation_date = CURDATE()
+                    THEN 1 ELSE 0 END), 0) AS wait_for_approval_today,
+                COALESCE(SUM(CASE
+                    WHEN LOWER(TRIM(cl.complaint_status)) = 'foc'
+                     AND cl.date = CURDATE()
+                     AND cl.foc_date = CURDATE()
+                    THEN 1 ELSE 0 END), 0) AS foc_today,
+                COALESCE(SUM(CASE
+                    WHEN LOWER(TRIM(cl.complaint_status)) = 'approved'
+                     AND cl.date = CURDATE()
+                     AND cl.approved_date = CURDATE()
+                    THEN 1 ELSE 0 END), 0) AS approved_today,
+                COALESCE(SUM(CASE
+                    WHEN LOWER(TRIM(cl.complaint_status)) = 'open'
+                     AND cl.date < CURDATE()
+                    THEN 1 ELSE 0 END), 0) AS old_logged,
+                COALESCE(SUM(CASE
+                    WHEN LOWER(TRIM(cl.complaint_status)) = 'closed'
+                     AND cl.closed_date = CURDATE()
+                     AND (cl.date IS NULL OR cl.date <> CURDATE())
+                    THEN 1 ELSE 0 END), 0) AS old_closed,
+                COALESCE(SUM(CASE
+                    WHEN LOWER(TRIM(cl.complaint_status)) = 'hardware picked'
+                     AND cl.hardware_picked_date = CURDATE()
+                     AND (cl.date IS NULL OR cl.date <> CURDATE())
+                    THEN 1 ELSE 0 END), 0) AS old_hardware_picked,
+                COALESCE(SUM(CASE
+                    WHEN LOWER(TRIM(cl.complaint_status)) = 'approved'
+                     AND cl.approved_date = CURDATE()
+                     AND (cl.date IS NULL OR cl.date <> CURDATE())
+                    THEN 1 ELSE 0 END), 0) AS old_approved,
+                COALESCE(SUM(CASE
+                    WHEN LOWER(TRIM(cl.complaint_status)) = 'wait for approval'
+                     AND cl.quotation_date = CURDATE()
+                     AND (cl.date IS NULL OR cl.date <> CURDATE())
+                    THEN 1 ELSE 0 END), 0) AS old_wait_for_approval,
+                COALESCE(SUM(CASE
+                    WHEN LOWER(TRIM(cl.complaint_status)) = 'foc'
+                     AND cl.foc_date = CURDATE()
+                     AND (cl.date IS NULL OR cl.date <> CURDATE())
+                    THEN 1 ELSE 0 END), 0) AS old_foc
+            FROM complaints_log cl
+            """, nativeQuery = true)
+    Object[] getComplaintSummarySnapshot();
 
     boolean existsByBankNameIgnoreCaseAndBranchCodeAndComplaintStatusNot(
             String bankName, String branchCode, String complaintStatus);

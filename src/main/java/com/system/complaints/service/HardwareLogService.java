@@ -243,41 +243,12 @@ public class HardwareLogService {
     }
 
     /**
-     * Retrieve all HardwareLogs.
-     */
-    public List<HardwareLog> getAllHardwareLogs() {
-        return hardwareLogRepository.findAllWithReports();
-    }
-
-    /**
      * Retrieve a HardwareLog by Complaint ID.
      */
     public HardwareLog getHardwareLogByComplaintId(String complaintId) {
         ComplaintLog complaintLog = fetchComplaintLogByComplaintId(complaintId);
         return hardwareLogRepository.findByComplaintLog(complaintLog)
                 .orElseThrow(() -> new RuntimeException("HardwareLog not found for complaintId: " + complaintId));
-    }
-
-    /**
-     * Retrieve HardwareLogs by status.
-     */
-    public List<HardwareLog> getHardwareLogsByStatus(String complaintStatus) {
-        List<ComplaintLog> complaints = complaintLogRepository.findByComplaintStatus(complaintStatus);
-        if (complaints.isEmpty()) {
-            throw new RuntimeException("No complaints found with status: " + complaintStatus);
-        }
-        return hardwareLogRepository.findByComplaintLogIn(complaints);
-    }
-
-    /**
-     * Delete a HardwareLog by Complaint ID.
-     */
-    @Transactional
-    public void deleteHardwareLogByComplaintId(String complaintId) {
-        HardwareLog hardwareLog = getHardwareLogByComplaintId(complaintId);
-        hardwareLogRepository.delete(hardwareLog);
-        // NEW: notify after mutation
-        notifyHardwareChanged();
     }
 
     /**
@@ -390,12 +361,30 @@ public class HardwareLogService {
         return Collections.emptyList();
     }
 
+    @Transactional(readOnly = true)
     public Map<String, Boolean> getReportAvailabilityMap(List<String> complaintIds) {
-        Map<String, Boolean> availabilityMap = new HashMap<>();
+        if (complaintIds == null || complaintIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
 
-        for (String complaintId : complaintIds) {
-            List<HardwareReport> reports = getReportsByComplaintId(complaintId);
-            availabilityMap.put(complaintId, reports != null && !reports.isEmpty());
+        List<String> sanitizedComplaintIds = complaintIds.stream()
+                .filter(Objects::nonNull)
+                .map(String::trim)
+                .filter(id -> !id.isEmpty())
+                .distinct()
+                .toList();
+
+        if (sanitizedComplaintIds.isEmpty()) {
+            return Collections.emptyMap();
+        }
+
+        Set<String> complaintIdsWithReports = new HashSet<>(
+                hardwareReportRepository.findComplaintIdsWithReports(sanitizedComplaintIds)
+        );
+
+        Map<String, Boolean> availabilityMap = new LinkedHashMap<>();
+        for (String complaintId : sanitizedComplaintIds) {
+            availabilityMap.put(complaintId, complaintIdsWithReports.contains(complaintId));
         }
 
         return availabilityMap;

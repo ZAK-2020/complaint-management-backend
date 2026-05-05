@@ -8,12 +8,15 @@
     import jakarta.annotation.PostConstruct;
     import jakarta.persistence.EntityManager;
     import jakarta.persistence.PersistenceContext;
+    import jakarta.persistence.Tuple;
     import jakarta.persistence.TypedQuery;
     import jakarta.persistence.criteria.*;
     import org.springframework.beans.factory.annotation.Autowired;
     import org.springframework.data.domain.Page;
     import org.springframework.data.domain.PageImpl;
+    import org.springframework.data.domain.PageRequest;
     import org.springframework.data.domain.Pageable;
+    import org.springframework.data.domain.Sort;
     import org.springframework.data.jpa.domain.Specification;
     import org.springframework.scheduling.annotation.Scheduled;
     import org.springframework.stereotype.Service;
@@ -31,6 +34,10 @@
 
     @Service
     public class ComplaintLogService {
+
+        private static final int DEFAULT_COMPLAINT_GROUP_PAGE_SIZE = 10;
+        private static final int MAX_COMPLAINT_GROUP_PAGE_SIZE = 100;
+        private static final String WAIT_FOR_APPROVAL_STATUS = "wait for approval";
 
 
         @PersistenceContext
@@ -170,85 +177,6 @@
 
 
         /**
-         * Update the job card path for a specific complaint.
-         */
-        public boolean updateJobCardPath(Long id, String jobCardPath) {
-            int rowsAffected = complaintLogRepository.updateJobCardPath(id, jobCardPath);
-            complaintLogRepository.findById(id).ifPresent(complaint -> {
-                saveComplaintHistory(
-                        complaint.getComplaintId(),
-                        "jobCardPath",
-                        complaint.getJobCardPath(),
-                        jobCardPath,
-                        "Automated update"
-                );
-            });
-            return rowsAffected > 0;
-        }
-
-        /**
-         * Mark a complaint as resolved and update related fields.
-         */
-        public boolean markAsResolved(Long id, String staffRemarks, String specialRemarks) {
-            Optional<ComplaintLog> complaintLogOpt = complaintLogRepository.findById(id);
-
-            if (complaintLogOpt.isPresent()) {
-                ComplaintLog complaintLog = complaintLogOpt.get();
-
-                String oldStaffRemarks = complaintLog.getStaffRemarks();
-                String oldSpecialRemarks = complaintLog.getSpecialRemarks();
-                String oldStatus = complaintLog.getComplaintStatus();
-                Date oldPendingForClosedDate = complaintLog.getPendingForClosedDate(); // Capture old date
-                Date autoDate = Date.valueOf(LocalDate.now());
-
-                // Update remarks and status
-                complaintLog.setStaffRemarks(staffRemarks);
-                complaintLog.setSpecialRemarks(specialRemarks);
-                complaintLog.setComplaintStatus("Pending For Closed");
-                complaintLog.setPendingForClosedDate(autoDate);
-
-                // Log the changes
-                saveComplaintHistory(complaintLog.getComplaintId(), "staffRemarks", oldStaffRemarks, staffRemarks, "Automated update");
-                saveComplaintHistory(complaintLog.getComplaintId(), "specialRemarks", oldSpecialRemarks, specialRemarks, "Automated update");
-                saveComplaintHistory(complaintLog.getComplaintId(), "complaintStatus", oldStatus, "Pending For Closed", "Automated update");
-
-                // Log the pendingForClosedDate change
-                if (oldPendingForClosedDate == null || !oldPendingForClosedDate.equals(autoDate)) {
-                    saveComplaintHistory(complaintLog.getComplaintId(), "pendingForClosedDate",
-                            oldPendingForClosedDate != null ? oldPendingForClosedDate.toString() : "N/A",
-                            autoDate.toString(),
-                            "Automated update");
-                }
-                try {
-                    pendingForClosedLogService.logPendingForClosed(
-                            complaintLog.getComplaintId(),
-                            "MOBILE",                     // source
-                            null,                         // userId if available, else null
-                            "MOBILE_APP"                  // username or source label
-                    );
-                } catch (Exception e) {
-                    e.printStackTrace();
-                    // Optionally log but do not fail the main operation
-                }
-                // Recalculate aging days
-                calculateAndSetAgingDays(complaintLog);
-                // Mark schedule as successful if there is a scheduleDate
-                if (complaintLog.getScheduleDate() != null) {
-                    scheduleService.markScheduleSuccessful(
-                            complaintLog.getComplaintId(),
-                            complaintLog.getScheduleDate()
-                    );
-                }
-
-                complaintLogRepository.save(complaintLog);
-                return true;
-            }
-
-            return false;
-        }
-
-
-        /**
          * Check if a complaint is a repeat complaint.
          */
         public boolean isRepeatComplaint(ComplaintLog complaintLog) {
@@ -358,6 +286,71 @@
             return result;
         }
 
+        public Map<String, String> getEngineerHistoryBatch(List<String> complaintIds) {
+            Map<String, String> result = new LinkedHashMap<>();
+            if (complaintIds == null || complaintIds.isEmpty()) {
+                return result;
+            }
+
+            List<String> normalizedIds = complaintIds.stream()
+                    .filter(Objects::nonNull)
+                    .map(String::trim)
+                    .filter(id -> !id.isEmpty())
+                    .distinct()
+                    .collect(Collectors.toList());
+
+            if (normalizedIds.isEmpty()) {
+                return result;
+            }
+
+            Map<String, LinkedHashSet<String>> engineersByComplaint = new LinkedHashMap<>();
+            for (String complaintId : normalizedIds) {
+                engineersByComplaint.put(complaintId, new LinkedHashSet<>());
+            }
+
+            List<ComplaintHistory> visitorNameChanges =
+                    complaintHistoryRepository.findByComplaintIdInAndFieldNameOrderByChangeDateAsc(
+                            normalizedIds,
+                            "visitorName"
+                    );
+
+            for (ComplaintHistory history : visitorNameChanges) {
+                LinkedHashSet<String> engineers = engineersByComplaint.get(history.getComplaintId());
+                if (engineers == null) {
+                    continue;
+                }
+                addEngineerName(engineers, history.getOldValue());
+                addEngineerName(engineers, history.getNewValue());
+            }
+
+            for (ComplaintLog complaint : complaintLogRepository.findByComplaintIdIn(normalizedIds)) {
+                LinkedHashSet<String> engineers = engineersByComplaint.get(complaint.getComplaintId());
+                if (engineers != null) {
+                    addEngineerName(engineers, complaint.getVisitorName());
+                }
+            }
+
+            for (String complaintId : normalizedIds) {
+                result.put(complaintId, String.join(", ", engineersByComplaint.getOrDefault(
+                        complaintId,
+                        new LinkedHashSet<>()
+                )));
+            }
+
+            return result;
+        }
+
+        private void addEngineerName(Set<String> engineers, String value) {
+            if (value == null) {
+                return;
+            }
+            String trimmed = value.trim();
+            if (trimmed.isEmpty() || "null".equalsIgnoreCase(trimmed)) {
+                return;
+            }
+            engineers.add(trimmed);
+        }
+
         /**
          * Retrieve a ComplaintLog by ID.
          */
@@ -371,20 +364,6 @@
          */
         public List<ComplaintLog> getAllComplaints() {
             return complaintLogRepository.findAll();
-        }
-
-        /**
-         * Retrieve complaints by status.
-         */
-        public List<ComplaintLog> getComplaintsByStatus(String complaintStatus) {
-            return complaintLogRepository.findByComplaintStatus(complaintStatus);
-        }
-
-        /**
-         * Retrieve complaints by both date and status.
-         */
-        public List<ComplaintLog> getComplaintsByDateAndStatus(Date date, String complaintStatus) {
-            return complaintLogRepository.findByDateAndComplaintStatus(date, complaintStatus);
         }
 
         /**
@@ -417,19 +396,6 @@
             } else {
                 throw new RuntimeException("Complaint with ID " + id + " not found");
             }
-        }
-
-        /**
-         * Retrieve complaints by visitor ID.
-         */
-        public List<ComplaintLog> getComplaintsByVisitorId(Long visitorId) {
-            return complaintLogRepository.findByVisitorId(visitorId);
-        }
-        /**
-         * Fetch all complaints with a null visitorId.
-         */
-        public List<ComplaintLog> getComplaintsByNullVisitorId() {
-            return complaintLogRepository.findByVisitorIdIsNullAndIsMarkedInPoolTrue();
         }
 
         /**
@@ -854,27 +820,6 @@
         }
 
         /**
-         * Update the staff remarks for a specific complaint.
-         */
-        public boolean updateStaffRemarks(Long id, String staffRemarks) {
-            Optional<ComplaintLog> complaintLogOptional = complaintLogRepository.findById(id);
-
-            if (complaintLogOptional.isPresent()) {
-                ComplaintLog complaintLog = complaintLogOptional.get();
-                String oldVal = complaintLog.getStaffRemarks();
-                complaintLog.setStaffRemarks(staffRemarks);
-                complaintLogRepository.save(complaintLog);
-
-                // Log this change
-                saveComplaintHistory(complaintLog.getComplaintId(), "staffRemarks", oldVal, staffRemarks, "Automated update");
-
-                return true;
-            }
-
-            return false; // Complaint not found
-        }
-
-        /**
          * Retrieve today's complaint metrics (counts of open and closed).
          */
         public Map<String, Integer> getTodaysComplaintMetrics() {
@@ -1282,6 +1227,60 @@
 
 
         public Map<String, Object> getComplaintDashboardSummary() {
+            if (complaintLogRepository != null) {
+                Object[] snapshot = complaintLogRepository.getComplaintSummarySnapshot();
+
+                long todayLogged = extractLong(snapshot, 0);
+                long sameDayClosed = extractLong(snapshot, 1);
+                long hardwarePickedToday = extractLong(snapshot, 2);
+                long waitForApprovalToday = extractLong(snapshot, 3);
+                long focToday = extractLong(snapshot, 4);
+                long approvedToday = extractLong(snapshot, 5);
+                long oldLogged = extractLong(snapshot, 6);
+                long oldClosed = extractLong(snapshot, 7);
+                long oldHardwarePicked = extractLong(snapshot, 8);
+                long oldApproved = extractLong(snapshot, 9);
+                long oldWaitForApproval = extractLong(snapshot, 10);
+                long oldFoc = extractLong(snapshot, 11);
+
+                long pendingToday = todayLogged - sameDayClosed - hardwarePickedToday - waitForApprovalToday - focToday - approvedToday;
+                long oldPending = oldLogged - oldClosed - oldHardwarePicked - oldWaitForApproval - oldApproved - oldFoc;
+
+                Map<String, Object> result = new LinkedHashMap<>();
+
+                result.put("todayComplaintLogged", Map.of(
+                        "logged", todayLogged,
+                        "sameDayClose", sameDayClosed,
+                        "hardwarePicked", hardwarePickedToday,
+                        "waitForApproval", waitForApprovalToday,
+                        "approved", approvedToday,
+                        "foc", focToday,
+                        "pending", pendingToday
+                ));
+
+                result.put("oldComplaintLogged", Map.of(
+                        "logged", oldLogged,
+                        "closed", oldClosed,
+                        "hardwarePicked", oldHardwarePicked,
+                        "approved", oldApproved,
+                        "foc", oldFoc,
+                        "waitForApproval", oldWaitForApproval,
+                        "pending", oldPending
+                ));
+
+                result.put("completeDetail", Map.of(
+                        "logged", todayLogged + oldLogged,
+                        "Closed", sameDayClosed + oldClosed,
+                        "hardwarePicked", hardwarePickedToday + oldHardwarePicked,
+                        "waitForApproval", waitForApprovalToday + oldWaitForApproval,
+                        "approved", approvedToday + oldApproved,
+                        "foc", focToday + oldFoc,
+                        "pending", pendingToday + oldPending
+                ));
+
+                return result;
+            }
+
             LocalDate today = LocalDate.now();
             Date todayDate = Date.valueOf(today);
 
@@ -1695,6 +1694,21 @@
                 String reportType,
                 Pageable pageable
         ) {
+            if (pageable != null || pageable == null) {
+                Pageable normalizedPageable = normalizeComplaintPageable(pageable);
+                Specification<ComplaintLog> optimizedSpec = buildComplaintSearchSpecification(
+                        status, bankName, branchCode, branchName, engineerName, city,
+                        complaintStatus, subStatus,
+                        dateFrom, dateTo, approvedDateFrom, approvedDateTo,
+                        closedDateFrom, closedDateTo, quotationDateFrom, quotationDateTo,
+                        pendingForClosedDateFrom, pendingForClosedDateTo,
+                        date, approvedDate, closedDate, pendingForClosedDate, quotationDate,
+                        priority, inPool, hasReport, reportType,
+                        false
+                );
+                return buildGroupedComplaintPage(optimizedSpec, normalizedPageable, false);
+            }
+
             Specification<ComplaintLog> spec = Specification.where(null);
 
             // --- Status filtering ---
@@ -2004,6 +2018,21 @@
                 String reportType,
                 Pageable pageable
         ) {
+            if (pageable != null || pageable == null) {
+                Pageable normalizedPageable = normalizeComplaintPageable(pageable);
+                Specification<ComplaintLog> optimizedSpec = buildComplaintSearchSpecification(
+                        status, bankName, branchCode, branchName, engineerName, city,
+                        complaintStatus, subStatus,
+                        dateFrom, dateTo, approvedDateFrom, approvedDateTo,
+                        closedDateFrom, closedDateTo, quotationDateFrom, quotationDateTo,
+                        pendingForClosedDateFrom, pendingForClosedDateTo,
+                        date, approvedDate, closedDate, pendingForClosedDate, quotationDate,
+                        priority, inPool, hasReport, reportType,
+                        true
+                );
+                return buildGroupedComplaintPage(optimizedSpec, normalizedPageable, true);
+            }
+
             Specification<ComplaintLog> spec = Specification.where(null);
 
             // 1. Status logic
@@ -2279,6 +2308,741 @@
 
         }
 
+
+
+        private Specification<ComplaintLog> buildComplaintSearchSpecification(
+                String status,
+                String bankName,
+                String branchCode,
+                String branchName,
+                String engineerName,
+                List<String> city,
+                String complaintStatus,
+                String subStatus,
+                String dateFrom,
+                String dateTo,
+                String approvedDateFrom,
+                String approvedDateTo,
+                String closedDateFrom,
+                String closedDateTo,
+                String quotationDateFrom,
+                String quotationDateTo,
+                String pendingForClosedDateFrom,
+                String pendingForClosedDateTo,
+                String date,
+                String approvedDate,
+                String closedDate,
+                String pendingForClosedDate,
+                String quotationDate,
+                String priority,
+                String inPool,
+                Boolean hasReport,
+                String reportType,
+                boolean includePreApprovedInOpen
+        ) {
+            Specification<ComplaintLog> spec = Specification.where(null);
+
+            if (status != null && !status.isBlank()) {
+                if (status.equalsIgnoreCase("Open")) {
+                    List<String> openStatuses = new ArrayList<>(Arrays.asList(
+                            "Open", "FOC", "Quotation", "Network Issue", "Visit Schedule", "Hardware Picked",
+                            "Visit On Hold", "Dispatched", "Delivered", "Received Inward", "Dispatch Inward",
+                            "Marked In Pool", "On Call", "Testing", "Renovation", "Disapproved",
+                            "Additional Counter", "Verify Approval", "BFC Approval", "AHO Approval", "BFC/AHO",
+                            "Approved", "Wait For Approval"
+                    ));
+                    if (includePreApprovedInOpen) {
+                        openStatuses.add("Pre Approved");
+                    }
+                    spec = spec.and((root, query, cb) -> root.get("complaintStatus").in(openStatuses));
+                } else if (status.equalsIgnoreCase("FOC_APPROVED")) {
+                    spec = spec.and((root, query, cb) -> root.get("complaintStatus").in(Arrays.asList("FOC", "Approved")));
+                } else if (!status.equalsIgnoreCase("Overall")) {
+                    String normalizedStatus = status.trim().toLowerCase(Locale.ROOT);
+                    spec = spec.and((root, query, cb) ->
+                            cb.equal(cb.lower(cb.trim(root.get("complaintStatus"))), normalizedStatus));
+                }
+            }
+
+            if (bankName != null && !bankName.isBlank()) {
+                String normalizedBank = bankName.trim().toLowerCase(Locale.ROOT);
+                spec = spec.and((root, query, cb) ->
+                        cb.like(cb.lower(cb.trim(root.get("bankName"))), "%" + normalizedBank + "%"));
+            }
+
+            int codeLength = 4;
+            if (branchCode != null && !branchCode.trim().isEmpty()) {
+                String trimmed = branchCode.trim();
+                if (trimmed.matches("\\d+")) {
+                    String unpadded = trimmed.replaceFirst("^0+(?!$)", "");
+                    String normalizedDigits = unpadded.isEmpty() ? "0" : unpadded;
+                    String padded = String.format("%0" + codeLength + "d", Integer.parseInt(normalizedDigits));
+                    spec = spec.and((root, query, cb) -> cb.or(
+                            cb.equal(cb.trim(root.get("branchCode")), padded),
+                            cb.equal(cb.trim(root.get("branchCode")), normalizedDigits)
+                    ));
+                } else {
+                    spec = spec.and((root, query, cb) ->
+                            cb.equal(cb.trim(root.get("branchCode")), trimmed));
+                }
+            }
+
+            if (branchName != null && !branchName.isBlank()) {
+                String normalizedBranchName = branchName.trim().toLowerCase(Locale.ROOT);
+                spec = spec.and((root, query, cb) ->
+                        cb.like(cb.lower(cb.trim(root.get("branchName"))), "%" + normalizedBranchName + "%"));
+            }
+
+            if (engineerName != null && !engineerName.isBlank()) {
+                String normalizedEngineer = engineerName.trim().toLowerCase(Locale.ROOT);
+                spec = spec.and((root, query, cb) ->
+                        cb.like(cb.lower(cb.trim(root.get("visitorName"))), "%" + normalizedEngineer + "%"));
+            }
+
+            List<String> normalizedCities = city == null
+                    ? List.of()
+                    : city.stream()
+                    .filter(Objects::nonNull)
+                    .map(String::trim)
+                    .filter(s -> !s.isEmpty())
+                    .map(s -> s.toLowerCase(Locale.ROOT))
+                    .toList();
+            if (!normalizedCities.isEmpty()) {
+                if (normalizedCities.size() == 1) {
+                    String singleCity = normalizedCities.get(0);
+                    spec = spec.and((root, query, cb) ->
+                            cb.like(cb.lower(cb.trim(root.get("city"))), "%" + singleCity + "%"));
+                } else {
+                    spec = spec.and((root, query, cb) ->
+                            cb.lower(cb.trim(root.get("city"))).in(normalizedCities));
+                }
+            }
+
+            if (complaintStatus != null && !complaintStatus.isBlank()) {
+                if (complaintStatus.equalsIgnoreCase("FOC_APPROVED")) {
+                    spec = spec.and((root, query, cb) -> root.get("complaintStatus").in(Arrays.asList("FOC", "Approved")));
+                } else {
+                    String normalizedComplaintStatus = complaintStatus.trim().toLowerCase(Locale.ROOT);
+                    spec = spec.and((root, query, cb) ->
+                            cb.equal(cb.lower(cb.trim(root.get("complaintStatus"))), normalizedComplaintStatus));
+                }
+            }
+
+            if (subStatus != null && !subStatus.isBlank()) {
+                String normalizedSubStatus = subStatus.trim().toLowerCase(Locale.ROOT);
+                spec = spec.and((root, query, cb) ->
+                        cb.like(cb.lower(cb.trim(root.get("complaintStatus"))), "%" + normalizedSubStatus + "%"));
+            }
+
+            if (priority != null && !priority.isBlank()) {
+                boolean isPriority = Boolean.parseBoolean(priority);
+                spec = spec.and((root, query, cb) -> cb.equal(root.get("priority"), isPriority));
+            }
+
+            if (inPool != null && !inPool.isBlank()) {
+                boolean markedInPool = Boolean.parseBoolean(inPool);
+                spec = spec.and((root, query, cb) -> cb.equal(root.get("markedInPool"), markedInPool));
+            }
+
+            if (Boolean.TRUE.equals(hasReport)) {
+                spec = spec.and((root, query, cb) -> {
+                    Subquery<Long> subquery = query.subquery(Long.class);
+                    Root<HardwareLog> hardwareLogRoot = subquery.from(HardwareLog.class);
+                    Join<HardwareLog, ?> reportJoin = hardwareLogRoot.join("reports", JoinType.INNER);
+                    subquery.select(hardwareLogRoot.get("id"))
+                            .where(
+                                    cb.equal(hardwareLogRoot.get("complaintLog"), root),
+                                    cb.isNotNull(reportJoin.get("id"))
+                            );
+                    return cb.exists(subquery);
+                });
+            }
+
+            Date dateFromParsed = parseDate(dateFrom, "dateFrom");
+            if (dateFromParsed != null) {
+                spec = spec.and((root, query, cb) ->
+                        cb.greaterThanOrEqualTo(root.get("date"), dateFromParsed));
+            }
+            Date dateToParsed = parseDate(dateTo, "dateTo");
+            if (dateToParsed != null) {
+                spec = spec.and((root, query, cb) ->
+                        cb.lessThanOrEqualTo(root.get("date"), dateToParsed));
+            }
+            Date approvedDateFromParsed = parseDate(approvedDateFrom, "approvedDateFrom");
+            if (approvedDateFromParsed != null) {
+                spec = spec.and((root, query, cb) ->
+                        cb.greaterThanOrEqualTo(root.get("approvedDate"), approvedDateFromParsed));
+            }
+            Date approvedDateToParsed = parseDate(approvedDateTo, "approvedDateTo");
+            if (approvedDateToParsed != null) {
+                spec = spec.and((root, query, cb) ->
+                        cb.lessThanOrEqualTo(root.get("approvedDate"), approvedDateToParsed));
+            }
+            Date closedDateFromParsed = parseDate(closedDateFrom, "closedDateFrom");
+            if (closedDateFromParsed != null) {
+                spec = spec.and((root, query, cb) ->
+                        cb.greaterThanOrEqualTo(root.get("closedDate"), closedDateFromParsed));
+            }
+            Date closedDateToParsed = parseDate(closedDateTo, "closedDateTo");
+            if (closedDateToParsed != null) {
+                spec = spec.and((root, query, cb) ->
+                        cb.lessThanOrEqualTo(root.get("closedDate"), closedDateToParsed));
+            }
+            Date quotationDateFromParsed = parseDate(quotationDateFrom, "quotationDateFrom");
+            if (quotationDateFromParsed != null) {
+                spec = spec.and((root, query, cb) ->
+                        cb.greaterThanOrEqualTo(root.get("quotationDate"), quotationDateFromParsed));
+            }
+            Date quotationDateToParsed = parseDate(quotationDateTo, "quotationDateTo");
+            if (quotationDateToParsed != null) {
+                spec = spec.and((root, query, cb) ->
+                        cb.lessThanOrEqualTo(root.get("quotationDate"), quotationDateToParsed));
+            }
+            Date pendingForClosedDateFromParsed = parseDate(pendingForClosedDateFrom, "pendingForClosedDateFrom");
+            if (pendingForClosedDateFromParsed != null) {
+                spec = spec.and((root, query, cb) ->
+                        cb.greaterThanOrEqualTo(root.get("pendingForClosedDate"), pendingForClosedDateFromParsed));
+            }
+            Date pendingForClosedDateToParsed = parseDate(pendingForClosedDateTo, "pendingForClosedDateTo");
+            if (pendingForClosedDateToParsed != null) {
+                spec = spec.and((root, query, cb) ->
+                        cb.lessThanOrEqualTo(root.get("pendingForClosedDate"), pendingForClosedDateToParsed));
+            }
+
+            if (date != null && !date.isBlank()) {
+                try {
+                    Date sqlDate = Date.valueOf(date.trim());
+                    spec = spec.and((root, query, cb) -> cb.equal(root.get("date"), sqlDate));
+                } catch (Exception ignored) {
+                }
+            }
+            if (approvedDate != null && !approvedDate.isBlank()) {
+                try {
+                    Date sqlApprovedDate = Date.valueOf(approvedDate.trim());
+                    spec = spec.and((root, query, cb) -> cb.equal(root.get("approvedDate"), sqlApprovedDate));
+                } catch (Exception ignored) {
+                }
+            }
+            if (closedDate != null && !closedDate.isBlank()) {
+                try {
+                    Date sqlClosedDate = Date.valueOf(closedDate.trim());
+                    spec = spec.and((root, query, cb) -> cb.equal(root.get("closedDate"), sqlClosedDate));
+                } catch (Exception ignored) {
+                }
+            }
+            if (quotationDate != null && !quotationDate.isBlank()) {
+                try {
+                    Date sqlQuotationDate = Date.valueOf(quotationDate.trim());
+                    spec = spec.and((root, query, cb) -> cb.equal(root.get("quotationDate"), sqlQuotationDate));
+                } catch (Exception ignored) {
+                }
+            }
+            if (pendingForClosedDate != null && !pendingForClosedDate.isBlank()) {
+                try {
+                    Date sqlPendingDate = Date.valueOf(pendingForClosedDate.trim());
+                    spec = spec.and((root, query, cb) -> cb.equal(root.get("pendingForClosedDate"), sqlPendingDate));
+                } catch (Exception ignored) {
+                }
+            }
+
+            return spec;
+        }
+
+        private Page<ComplaintBranchGroupDTO> buildGroupedComplaintPage(
+                Specification<ComplaintLog> spec,
+                Pageable pageable,
+                boolean excludeAllWaitForApprovalGroups
+        ) {
+            if (pageable != null || pageable == null) {
+                Pageable normalizedPageable = normalizeComplaintPageable(pageable);
+                long totalGroups = countBranchGroups(spec, excludeAllWaitForApprovalGroups);
+                long totalComplaints = countComplaintsForGroupedSearch(spec, excludeAllWaitForApprovalGroups);
+                long complaintsBeforePage = countComplaintsBeforePage(spec, excludeAllWaitForApprovalGroups, normalizedPageable);
+
+                RequestAttributes requestAttributes = RequestContextHolder.getRequestAttributes();
+                if (requestAttributes != null) {
+                    requestAttributes.setAttribute("complaintsBeforePage", complaintsBeforePage, RequestAttributes.SCOPE_REQUEST);
+                    requestAttributes.setAttribute("totalGroups", totalGroups, RequestAttributes.SCOPE_REQUEST);
+                    requestAttributes.setAttribute("totalComplaints", totalComplaints, RequestAttributes.SCOPE_REQUEST);
+                }
+
+                int start = (int) Math.min(normalizedPageable.getOffset(), totalGroups);
+                if (start >= totalGroups) {
+                    return new PageImpl<>(List.of(), normalizedPageable, totalComplaints);
+                }
+
+                List<BranchGroupSummary> pageSummaries = fetchBranchGroupSummariesPage(
+                        spec,
+                        excludeAllWaitForApprovalGroups,
+                        start,
+                        normalizedPageable.getPageSize()
+                );
+
+                if (pageSummaries.isEmpty()) {
+                    return new PageImpl<>(List.of(), normalizedPageable, totalComplaints);
+                }
+
+                Specification<ComplaintLog> pageGroupSpec = buildPageGroupSpecification(pageSummaries);
+                List<ComplaintLog> pageComplaints = complaintLogRepository.findAll(
+                        spec.and(pageGroupSpec),
+                        Sort.by(Sort.Direction.DESC, "date", "id")
+                );
+
+                enrichComplaintsWithLatestHardwareData(pageComplaints);
+
+                Map<String, List<ComplaintLog>> complaintsByGroup = new LinkedHashMap<>();
+                for (BranchGroupSummary summary : pageSummaries) {
+                    complaintsByGroup.put(summary.groupKey(), new ArrayList<>());
+                }
+
+                for (ComplaintLog complaint : pageComplaints) {
+                    complaintsByGroup
+                            .computeIfAbsent(normalizeGroupKey(complaint.getBankName(), complaint.getBranchCode()), key -> new ArrayList<>())
+                            .add(complaint);
+                }
+
+                List<ComplaintBranchGroupDTO> pageGroups = new ArrayList<>();
+                for (List<ComplaintLog> complaints : complaintsByGroup.values()) {
+                    if (complaints == null || complaints.isEmpty()) {
+                        continue;
+                    }
+
+                    complaints.sort((left, right) -> {
+                        int dateCompare = Comparator.nullsLast(Date::compareTo).compare(right.getDate(), left.getDate());
+                        if (dateCompare != 0) {
+                            return dateCompare;
+                        }
+                        return Long.compare(right.getId(), left.getId());
+                    });
+
+                    ComplaintLog first = complaints.get(0);
+                    pageGroups.add(new ComplaintBranchGroupDTO(
+                            first.getBankName(),
+                            first.getBranchCode(),
+                            first.getBranchName(),
+                            complaints
+                    ));
+                }
+
+                return new PageImpl<>(pageGroups, normalizedPageable, totalComplaints);
+            }
+
+            List<BranchGroupSummary> groupSummaries = fetchBranchGroupSummaries(spec, excludeAllWaitForApprovalGroups);
+
+            long totalComplaints = groupSummaries.stream()
+                    .mapToLong(BranchGroupSummary::complaintCount)
+                    .sum();
+
+            int start = (int) Math.min(pageable.getOffset(), groupSummaries.size());
+            int end = Math.min(start + pageable.getPageSize(), groupSummaries.size());
+
+            long complaintsBeforePage = groupSummaries.stream()
+                    .limit(start)
+                    .mapToLong(BranchGroupSummary::complaintCount)
+                    .sum();
+
+            RequestAttributes ra = RequestContextHolder.getRequestAttributes();
+            if (ra != null) {
+                ra.setAttribute("complaintsBeforePage", complaintsBeforePage, RequestAttributes.SCOPE_REQUEST);
+                ra.setAttribute("totalGroups", groupSummaries.size(), RequestAttributes.SCOPE_REQUEST);
+                ra.setAttribute("totalComplaints", totalComplaints, RequestAttributes.SCOPE_REQUEST);
+            }
+
+            if (start >= end) {
+                return new PageImpl<>(List.of(), pageable, totalComplaints);
+            }
+
+            List<BranchGroupSummary> pageSummaries = groupSummaries.subList(start, end);
+            Specification<ComplaintLog> pageGroupSpec = buildPageGroupSpecification(pageSummaries);
+            List<ComplaintLog> pageComplaints = complaintLogRepository.findAll(
+                    spec.and(pageGroupSpec),
+                    Sort.by(Sort.Direction.DESC, "date", "id")
+            );
+
+            enrichComplaintsWithLatestHardwareData(pageComplaints);
+
+            Map<String, List<ComplaintLog>> complaintsByGroup = new LinkedHashMap<>();
+            for (BranchGroupSummary summary : pageSummaries) {
+                complaintsByGroup.put(summary.groupKey(), new ArrayList<>());
+            }
+
+            for (ComplaintLog complaint : pageComplaints) {
+                complaintsByGroup
+                        .computeIfAbsent(normalizeGroupKey(complaint.getBankName(), complaint.getBranchCode()), key -> new ArrayList<>())
+                        .add(complaint);
+            }
+
+            List<ComplaintBranchGroupDTO> pageGroups = new ArrayList<>();
+            for (List<ComplaintLog> complaints : complaintsByGroup.values()) {
+                if (complaints == null || complaints.isEmpty()) {
+                    continue;
+                }
+
+                complaints.sort((left, right) -> {
+                    int dateCompare = Comparator.nullsLast(Date::compareTo).compare(right.getDate(), left.getDate());
+                    if (dateCompare != 0) {
+                        return dateCompare;
+                    }
+                    return Long.compare(right.getId(), left.getId());
+                });
+
+                ComplaintLog first = complaints.get(0);
+                pageGroups.add(new ComplaintBranchGroupDTO(
+                        first.getBankName(),
+                        first.getBranchCode(),
+                        first.getBranchName(),
+                        complaints
+                ));
+            }
+
+            return new PageImpl<>(pageGroups, pageable, totalComplaints);
+        }
+
+        private List<BranchGroupSummary> fetchBranchGroupSummaries(
+                Specification<ComplaintLog> spec,
+                boolean excludeAllWaitForApprovalGroups
+        ) {
+            CriteriaBuilder cb = entityManager.getCriteriaBuilder();
+            CriteriaQuery<Tuple> query = cb.createTupleQuery();
+            Root<ComplaintLog> root = query.from(ComplaintLog.class);
+
+            Expression<String> normalizedBank = cb.lower(cb.trim(root.get("bankName")));
+            Expression<String> normalizedBranchCode = cb.lower(cb.trim(root.get("branchCode")));
+            Expression<Long> complaintCount = cb.count(root.get("id"));
+            Expression<Date> latestDate = cb.greatest(root.<Date>get("date"));
+            Expression<Long> latestId = cb.max(root.get("id"));
+
+            query.multiselect(
+                    normalizedBank.alias("bankKey"),
+                    normalizedBranchCode.alias("branchCodeKey"),
+                    complaintCount.alias("complaintCount"),
+                    latestDate.alias("latestDate"),
+                    latestId.alias("latestId")
+            );
+
+            Predicate predicate = spec == null ? null : spec.toPredicate(root, query, cb);
+            if (predicate != null) {
+                query.where(predicate);
+            }
+
+            query.groupBy(normalizedBank, normalizedBranchCode);
+
+            if (excludeAllWaitForApprovalGroups) {
+                Expression<Integer> nonWaitCount = cb.sum(
+                        cb.<Integer>selectCase()
+                                .when(
+                                        cb.notEqual(cb.lower(cb.trim(root.get("complaintStatus"))), "wait for approval"),
+                                        1
+                                )
+                                .otherwise(0)
+                );
+                query.having(cb.greaterThan(nonWaitCount, 0));
+            }
+
+            query.orderBy(cb.desc(latestDate), cb.desc(latestId));
+
+            return entityManager.createQuery(query).getResultList().stream()
+                    .map(tuple -> new BranchGroupSummary(
+                            Optional.ofNullable(tuple.get("bankKey", String.class)).orElse(""),
+                            Optional.ofNullable(tuple.get("branchCodeKey", String.class)).orElse(""),
+                            Optional.ofNullable(tuple.get("complaintCount", Long.class)).orElse(0L)
+                    ))
+                    .toList();
+        }
+
+        private Specification<ComplaintLog> buildPageGroupSpecification(List<BranchGroupSummary> pageSummaries) {
+            return (root, query, cb) -> {
+                if (pageSummaries == null || pageSummaries.isEmpty()) {
+                    return cb.disjunction();
+                }
+
+                Expression<String> normalizedBank = cb.lower(cb.trim(root.get("bankName")));
+                Expression<String> normalizedBranchCode = cb.lower(cb.trim(root.get("branchCode")));
+
+                List<Predicate> predicates = pageSummaries.stream()
+                        .map(summary -> cb.and(
+                                cb.equal(normalizedBank, summary.bankKey()),
+                                cb.equal(normalizedBranchCode, summary.branchCodeKey())
+                        ))
+                        .toList();
+
+                return cb.or(predicates.toArray(new Predicate[0]));
+            };
+        }
+
+        private void enrichComplaintsWithLatestHardwareData(List<ComplaintLog> complaints) {
+            if (complaints == null || complaints.isEmpty()) {
+                return;
+            }
+
+            List<Long> complaintIds = complaints.stream()
+                    .map(ComplaintLog::getId)
+                    .filter(Objects::nonNull)
+                    .toList();
+
+            if (complaintIds.isEmpty()) {
+                return;
+            }
+
+            List<HardwareLog> hardwareLogs = hardwareLogRepository.findByComplaintLogIdIn(complaintIds);
+            Map<Long, HardwareLog> latestLogByComplaintId = new HashMap<>();
+
+            for (HardwareLog hardwareLog : hardwareLogs) {
+                if (hardwareLog.getComplaintLog() == null || hardwareLog.getComplaintLog().getId() == null) {
+                    continue;
+                }
+
+                Long complaintId = hardwareLog.getComplaintLog().getId();
+                HardwareLog current = latestLogByComplaintId.get(complaintId);
+                if (current == null || hardwareLog.getId() > current.getId()) {
+                    latestLogByComplaintId.put(complaintId, hardwareLog);
+                }
+            }
+
+            for (ComplaintLog complaint : complaints) {
+                HardwareLog latestLog = latestLogByComplaintId.get(complaint.getId());
+                if (latestLog == null) {
+                    continue;
+                }
+                complaint.setCourierStatus(latestLog.getCourierStatus());
+                complaint.setEquipmentDescription(latestLog.getEquipmentDescription());
+            }
+        }
+
+        private String normalizeGroupKey(String bankName, String branchCode) {
+            String normalizedBank = bankName == null ? "" : bankName.trim().toLowerCase(Locale.ROOT);
+            String normalizedBranchCode = branchCode == null ? "" : branchCode.trim().toLowerCase(Locale.ROOT);
+            return normalizedBank + "__" + normalizedBranchCode;
+        }
+
+        private Pageable normalizeComplaintPageable(Pageable pageable) {
+            int pageNumber = pageable == null ? 0 : Math.max(pageable.getPageNumber(), 0);
+            int requestedSize = pageable == null || pageable.isUnpaged()
+                    ? DEFAULT_COMPLAINT_GROUP_PAGE_SIZE
+                    : pageable.getPageSize();
+            int safeSize = requestedSize <= 0
+                    ? DEFAULT_COMPLAINT_GROUP_PAGE_SIZE
+                    : Math.min(requestedSize, MAX_COMPLAINT_GROUP_PAGE_SIZE);
+            Sort sort = pageable != null && pageable.getSort().isSorted()
+                    ? pageable.getSort()
+                    : Sort.by(Sort.Direction.DESC, "date", "id");
+
+            return PageRequest.of(pageNumber, safeSize, sort);
+        }
+
+        private List<BranchGroupSummary> fetchBranchGroupSummariesPage(
+                Specification<ComplaintLog> spec,
+                boolean excludeAllWaitForApprovalGroups,
+                int offset,
+                int limit
+        ) {
+            if (limit <= 0) {
+                return List.of();
+            }
+
+            CriteriaBuilder cb = entityManager.getCriteriaBuilder();
+            CriteriaQuery<Tuple> query = cb.createTupleQuery();
+            Root<ComplaintLog> root = query.from(ComplaintLog.class);
+
+            Expression<String> normalizedBank = normalizedBankExpression(cb, root);
+            Expression<String> normalizedBranchCode = normalizedBranchCodeExpression(cb, root);
+            Expression<Long> complaintCount = cb.count(root.get("id"));
+            Expression<Date> latestDate = cb.greatest(root.<Date>get("date"));
+            Expression<Long> latestId = cb.max(root.get("id"));
+
+            query.multiselect(
+                    normalizedBank.alias("bankKey"),
+                    normalizedBranchCode.alias("branchCodeKey"),
+                    complaintCount.alias("complaintCount"),
+                    latestDate.alias("latestDate"),
+                    latestId.alias("latestId")
+            );
+
+            Predicate predicate = spec == null ? null : spec.toPredicate(root, query, cb);
+            if (predicate != null) {
+                query.where(predicate);
+            }
+
+            query.groupBy(normalizedBank, normalizedBranchCode);
+
+            if (excludeAllWaitForApprovalGroups) {
+                Expression<Integer> nonWaitCount = cb.sum(
+                        cb.<Integer>selectCase()
+                                .when(
+                                        cb.notEqual(normalizedStatusExpression(cb, root), WAIT_FOR_APPROVAL_STATUS),
+                                        1
+                                )
+                                .otherwise(0)
+                );
+                query.having(cb.greaterThan(nonWaitCount, 0));
+            }
+
+            query.orderBy(cb.desc(latestDate), cb.desc(latestId));
+
+            TypedQuery<Tuple> typedQuery = entityManager.createQuery(query);
+            typedQuery.setFirstResult(Math.max(offset, 0));
+            typedQuery.setMaxResults(limit);
+
+            return typedQuery.getResultList().stream()
+                    .map(tuple -> new BranchGroupSummary(
+                            Optional.ofNullable(tuple.get("bankKey", String.class)).orElse(""),
+                            Optional.ofNullable(tuple.get("branchCodeKey", String.class)).orElse(""),
+                            Optional.ofNullable(tuple.get("complaintCount", Long.class)).orElse(0L)
+                    ))
+                    .toList();
+        }
+
+        private long countBranchGroups(
+                Specification<ComplaintLog> spec,
+                boolean excludeAllWaitForApprovalGroups
+        ) {
+            CriteriaBuilder cb = entityManager.getCriteriaBuilder();
+            CriteriaQuery<Long> query = cb.createQuery(Long.class);
+            Root<ComplaintLog> root = query.from(ComplaintLog.class);
+
+            List<Predicate> predicates = new ArrayList<>();
+            Predicate specPredicate = spec == null ? null : spec.toPredicate(root, query, cb);
+            if (specPredicate != null) {
+                predicates.add(specPredicate);
+            }
+            if (excludeAllWaitForApprovalGroups) {
+                predicates.add(cb.notEqual(normalizedStatusExpression(cb, root), WAIT_FOR_APPROVAL_STATUS));
+            }
+
+            query.select(cb.countDistinct(buildNormalizedGroupKeyExpression(cb, root)));
+            if (!predicates.isEmpty()) {
+                query.where(predicates.toArray(new Predicate[0]));
+            }
+
+            Long result = entityManager.createQuery(query).getSingleResult();
+            return result == null ? 0L : result;
+        }
+
+        private long countComplaintsForGroupedSearch(
+                Specification<ComplaintLog> spec,
+                boolean excludeAllWaitForApprovalGroups
+        ) {
+            if (!excludeAllWaitForApprovalGroups) {
+                return complaintLogRepository.count(spec);
+            }
+
+            long totalComplaints = 0L;
+            int offset = 0;
+
+            while (true) {
+                List<BranchGroupSummary> batch = fetchBranchGroupSummariesPage(
+                        spec,
+                        true,
+                        offset,
+                        MAX_COMPLAINT_GROUP_PAGE_SIZE
+                );
+                if (batch.isEmpty()) {
+                    break;
+                }
+
+                totalComplaints += batch.stream()
+                        .mapToLong(BranchGroupSummary::complaintCount)
+                        .sum();
+                offset += batch.size();
+            }
+
+            return totalComplaints;
+        }
+
+        private long countComplaintsBeforePage(
+                Specification<ComplaintLog> spec,
+                boolean excludeAllWaitForApprovalGroups,
+                Pageable pageable
+        ) {
+            long offset = pageable == null ? 0L : pageable.getOffset();
+            if (offset <= 0) {
+                return 0L;
+            }
+
+            int limitedOffset = offset > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) offset;
+            return fetchBranchGroupSummariesPage(spec, excludeAllWaitForApprovalGroups, 0, limitedOffset).stream()
+                    .mapToLong(BranchGroupSummary::complaintCount)
+                    .sum();
+        }
+
+        private Predicate buildIncludedGroupPredicate(
+                Specification<ComplaintLog> spec,
+                CriteriaQuery<?> parentQuery,
+                CriteriaBuilder cb,
+                Root<ComplaintLog> root
+        ) {
+            Subquery<Long> subquery = parentQuery.subquery(Long.class);
+            Root<ComplaintLog> subRoot = subquery.from(ComplaintLog.class);
+
+            List<Predicate> subPredicates = new ArrayList<>();
+            subPredicates.add(cb.equal(normalizedBankExpression(cb, subRoot), normalizedBankExpression(cb, root)));
+            subPredicates.add(cb.equal(normalizedBranchCodeExpression(cb, subRoot), normalizedBranchCodeExpression(cb, root)));
+            subPredicates.add(cb.notEqual(normalizedStatusExpression(cb, subRoot), WAIT_FOR_APPROVAL_STATUS));
+
+            subquery.select(cb.literal(1L)).where(subPredicates.toArray(new Predicate[0]));
+            return cb.exists(subquery);
+        }
+
+        private Expression<String> buildNormalizedGroupKeyExpression(CriteriaBuilder cb, Root<ComplaintLog> root) {
+            return cb.concat(
+                    cb.concat(normalizedBankExpression(cb, root), "__"),
+                    normalizedBranchCodeExpression(cb, root)
+            );
+        }
+
+        private Expression<String> normalizedBankExpression(CriteriaBuilder cb, Root<ComplaintLog> root) {
+            return normalizeStringExpression(cb, root.<String>get("bankName"));
+        }
+
+        private Expression<String> normalizedBranchCodeExpression(CriteriaBuilder cb, Root<ComplaintLog> root) {
+            return normalizeStringExpression(cb, root.<String>get("branchCode"));
+        }
+
+        private Expression<String> normalizedStatusExpression(CriteriaBuilder cb, Root<ComplaintLog> root) {
+            return normalizeStringExpression(cb, root.<String>get("complaintStatus"));
+        }
+
+        private Expression<String> normalizeStringExpression(CriteriaBuilder cb, Expression<String> expression) {
+            CriteriaBuilder.Coalesce<String> coalesce = cb.coalesce();
+            coalesce.value(expression);
+            coalesce.value("");
+            return cb.lower(cb.trim(coalesce));
+        }
+
+        private long extractLong(Object[] row, int index) {
+            if (row == null || index < 0 || index >= row.length || row[index] == null) {
+                return 0L;
+            }
+            return ((Number) row[index]).longValue();
+        }
+
+        private static final class BranchGroupSummary {
+            private final String bankKey;
+            private final String branchCodeKey;
+            private final long complaintCount;
+
+            private BranchGroupSummary(String bankKey, String branchCodeKey, long complaintCount) {
+                this.bankKey = bankKey;
+                this.branchCodeKey = branchCodeKey;
+                this.complaintCount = complaintCount;
+            }
+
+            private String bankKey() {
+                return bankKey;
+            }
+
+            private String branchCodeKey() {
+                return branchCodeKey;
+            }
+
+            private long complaintCount() {
+                return complaintCount;
+            }
+
+            private String groupKey() {
+                return bankKey + "__" + branchCodeKey;
+            }
+        }
 
 
         public boolean existsOpenComplaint(String bankName, String branchCode) {

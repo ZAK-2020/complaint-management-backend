@@ -33,6 +33,8 @@ public interface ComplaintHistoryRepository extends JpaRepository<ComplaintHisto
      */
     List<ComplaintHistory> findByComplaintIdOrderByChangeDateDesc(String complaintId);
 
+    List<ComplaintHistory> findByComplaintIdInAndFieldNameOrderByChangeDateAsc(List<String> complaintIds, String fieldName);
+
     List<ComplaintHistory> findTop20ByOrderByChangeDateDesc();
 
     List<ComplaintHistory> findTop20ByComplaintIdOrderByChangeDateDesc(String complaintId);

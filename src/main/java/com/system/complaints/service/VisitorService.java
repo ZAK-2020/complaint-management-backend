@@ -1,5 +1,6 @@
 package com.system.complaints.service;
 
+import com.system.complaints.dto.VisitorSummaryDTO;
 import com.system.complaints.model.Visitor;
 import com.system.complaints.repository.VisitorRepository;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -18,7 +19,25 @@ public class VisitorService {
     // ---------------------------------------------------------
 
     public List<Visitor> getAllVisitors() {
-        return visitorRepository.findAll();
+        return visitorRepository.findAllByOrderByNameAsc();
+    }
+
+    public List<VisitorSummaryDTO> getVisitorSummaries() {
+        return visitorRepository.findAllSummaries();
+    }
+
+    public List<Visitor> getVisitorsByCity(String city) {
+        if (city == null || city.trim().isEmpty()) {
+            return getAllVisitors();
+        }
+        return visitorRepository.findByCityIgnoreCaseOrderByNameAsc(city.trim());
+    }
+
+    public List<VisitorSummaryDTO> getVisitorSummariesByCity(String city) {
+        if (city == null || city.trim().isEmpty()) {
+            return getVisitorSummaries();
+        }
+        return visitorRepository.findSummariesByCity(city.trim());
     }
 
     // Method to find a visitor's name by ID

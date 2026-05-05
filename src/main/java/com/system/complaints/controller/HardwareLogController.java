@@ -18,9 +18,9 @@ import org.springframework.web.bind.annotation.*;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
-import com.system.complaints.dto.PartInfoDTO;
 
 import java.util.*;
+import java.util.NoSuchElementException;
 
 @RestController
 @RequestMapping("/hardware-logs")
@@ -68,33 +68,6 @@ public class HardwareLogController {
     }
 
     /**
-     * Retrieve all HardwareLogs.
-     */
-    @GetMapping
-    public ResponseEntity<List<HardwareLog>> getAllHardwareLogs() {
-        List<HardwareLog> hardwareLogs = hardwareLogService.getAllHardwareLogs();
-        return ResponseEntity.ok(hardwareLogs);
-    }
-
-    /**
-     * Retrieve a HardwareLog by Complaint ID.
-     */
-    @GetMapping("/by-complaint/{complaintId}")
-    public ResponseEntity<HardwareLog> getHardwareLogByComplaintId(@PathVariable String complaintId) {
-        HardwareLog hardwareLog = hardwareLogService.getHardwareLogByComplaintId(complaintId);
-        return ResponseEntity.ok(hardwareLog);
-    }
-
-    /**
-     * Retrieve HardwareLogs by status.
-     */
-    @GetMapping("/by-status")
-    public ResponseEntity<List<HardwareLog>> getHardwareLogsByStatus(@RequestParam String complaintStatus) {
-        List<HardwareLog> hardwareLogs = hardwareLogService.getHardwareLogsByStatus(complaintStatus);
-        return ResponseEntity.ok(hardwareLogs);
-    }
-
-    /**
      * Update a HardwareLog by Complaint ID.
      */
     @PutMapping("/{complaintId}")
@@ -109,16 +82,6 @@ public class HardwareLogController {
             e.printStackTrace();
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(null);
         }
-    }
-
-    /**
-     * Delete a HardwareLog by Complaint ID.
-     */
-    @DeleteMapping("/by-complaint/{complaintId}")
-    public ResponseEntity<Void> deleteHardwareLogByComplaintId(@PathVariable String complaintId) {
-        // Service method deletes and publishes change itself
-        hardwareLogService.deleteHardwareLogByComplaintId(complaintId);
-        return ResponseEntity.noContent().build();
     }
 
     // NEW ENDPOINTS FOR MULTIPLE REPORTS
@@ -247,13 +210,17 @@ public class HardwareLogController {
             @PathVariable Long complaintId,
             @PathVariable Long partId,
             @RequestBody HardwarePart hardwarePart) {
-        HardwarePart updated = hardwarePartService.updateHardwarePart(partId, hardwarePart);
+        try {
+            HardwarePart updated = hardwarePartService.updateHardwarePart(partId, hardwarePart);
 
-        // Broadcast after mutation
-        hardwareLogService.broadcastCourierStatusCounts();
-        hardwareLogService.broadcastTrendsPerDate();
+            // Broadcast after mutation
+            hardwareLogService.broadcastCourierStatusCounts();
+            hardwareLogService.broadcastTrendsPerDate();
 
-        return ResponseEntity.ok(updated);
+            return ResponseEntity.ok(updated);
+        } catch (NoSuchElementException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+        }
     }
 
     // Delete a hardware part
@@ -261,13 +228,17 @@ public class HardwareLogController {
     public ResponseEntity<Void> deleteHardwarePart(
             @PathVariable Long complaintId,
             @PathVariable Long partId) {
-        hardwarePartService.deleteHardwarePart(partId);
+        try {
+            hardwarePartService.deleteHardwarePart(partId);
 
-        // Broadcast after mutation
-        hardwareLogService.broadcastCourierStatusCounts();
-        hardwareLogService.broadcastTrendsPerDate();
+            // Broadcast after mutation
+            hardwareLogService.broadcastCourierStatusCounts();
+            hardwareLogService.broadcastTrendsPerDate();
 
-        return ResponseEntity.noContent().build();
+            return ResponseEntity.noContent().build();
+        } catch (NoSuchElementException e) {
+            return ResponseEntity.notFound().build();
+        }
     }
 
     /**
@@ -282,40 +253,36 @@ public class HardwareLogController {
         return ResponseEntity.ok(filteredLogs);
     }
 
-    // Accept a hardware part for repair
-    @PatchMapping("/parts/{partId}/accept")
-    public ResponseEntity<HardwarePart> acceptHardwarePart(@PathVariable Long partId) {
-        HardwarePart updated = hardwarePartService.acceptPart(partId);
-
-        // Broadcast after mutation
-        hardwareLogService.broadcastCourierStatusCounts();
-        hardwareLogService.broadcastTrendsPerDate();
-
-        return ResponseEntity.ok(updated);
-    }
-
     // Mark a hardware part as repaired
     @PatchMapping("/parts/{partId}/repaired")
     public ResponseEntity<HardwarePart> markHardwarePartRepaired(@PathVariable Long partId) {
-        HardwarePart updated = hardwarePartService.markPartRepaired(partId);
+        try {
+            HardwarePart updated = hardwarePartService.markPartRepaired(partId);
 
-        // Broadcast after mutation
-        hardwareLogService.broadcastCourierStatusCounts();
-        hardwareLogService.broadcastTrendsPerDate();
+            // Broadcast after mutation
+            hardwareLogService.broadcastCourierStatusCounts();
+            hardwareLogService.broadcastTrendsPerDate();
 
-        return ResponseEntity.ok(updated);
+            return ResponseEntity.ok(updated);
+        } catch (NoSuchElementException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+        }
     }
 
     // Mark a hardware part as not repairable
     @PatchMapping("/parts/{partId}/not-repairable")
     public ResponseEntity<HardwarePart> markHardwarePartNotRepairable(@PathVariable Long partId) {
-        HardwarePart updated = hardwarePartService.markPartNotRepairable(partId);
+        try {
+            HardwarePart updated = hardwarePartService.markPartNotRepairable(partId);
 
-        // Broadcast after mutation
-        hardwareLogService.broadcastCourierStatusCounts();
-        hardwareLogService.broadcastTrendsPerDate();
+            // Broadcast after mutation
+            hardwareLogService.broadcastCourierStatusCounts();
+            hardwareLogService.broadcastTrendsPerDate();
 
-        return ResponseEntity.ok(updated);
+            return ResponseEntity.ok(updated);
+        } catch (NoSuchElementException e) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(null);
+        }
     }
 
     @GetMapping("/paginated")
@@ -417,12 +384,6 @@ public class HardwareLogController {
     public ResponseEntity<Map<String, Object>> getCourierStatusCounts() {
         Map<String, Object> counts = hardwareLogService.getCourierStatusCounts();
         return ResponseEntity.ok(counts);
-    }
-
-    @GetMapping("/parts/details")
-    public ResponseEntity<List<PartInfoDTO>> getPartDetails() {
-        List<PartInfoDTO> details = hardwarePartService.getPartDetails();
-        return ResponseEntity.ok(details);
     }
 
     @GetMapping("/trends-per-date")

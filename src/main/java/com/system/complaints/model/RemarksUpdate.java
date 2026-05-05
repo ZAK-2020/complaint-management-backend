@@ -2,6 +2,7 @@ package com.system.complaints.model;
 
 import jakarta.persistence.*;
 import java.time.LocalDateTime;
+import java.time.ZoneId;
 
 @Entity
 @Table(name = "remarks_updates")  // Table name for remarks
@@ -24,8 +25,10 @@ public class RemarksUpdate {
     @Column(name = "logged_by", nullable = true)  // Allow null for loggedBy field
     private String loggedBy;
 
+    private static final ZoneId KARACHI_ZONE = ZoneId.of("Asia/Karachi");
+
     public RemarksUpdate() {
-        this.timestamp = LocalDateTime.now();
+        this.timestamp = LocalDateTime.now(KARACHI_ZONE);
     }
 
     // Getters and Setters

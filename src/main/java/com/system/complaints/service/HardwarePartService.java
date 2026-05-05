@@ -1,6 +1,5 @@
 package com.system.complaints.service;
 
-import com.system.complaints.dto.PartInfoDTO;
 import com.system.complaints.model.HardwarePart;
 import com.system.complaints.model.ComplaintLog;
 import com.system.complaints.repository.HardwarePartRepository;
@@ -10,6 +9,7 @@ import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.NoSuchElementException;
 import java.util.Optional;
 
 @Service
@@ -20,6 +20,11 @@ public class HardwarePartService {
 
     @Autowired
     private ComplaintLogRepository complaintLogRepository;
+
+    private HardwarePart findRequiredPart(Long partId) {
+        return hardwarePartRepository.findById(partId)
+                .orElseThrow(() -> new NoSuchElementException("HardwarePart not found with id: " + partId));
+    }
 
     /**
      * Add a HardwarePart to a ComplaintLog.
@@ -51,8 +56,7 @@ public class HardwarePartService {
      * Update a HardwarePart.
      */
     public HardwarePart updateHardwarePart(Long partId, HardwarePart updatedPart) {
-        HardwarePart part = hardwarePartRepository.findById(partId)
-                .orElseThrow(() -> new RuntimeException("HardwarePart not found with id: " + partId));
+        HardwarePart part = findRequiredPart(partId);
 
         String oldEngineer = part.getAssignedEngineer();
 
@@ -96,17 +100,8 @@ public class HardwarePartService {
         return savedPart;
     }
 
-    public HardwarePart acceptPart(Long partId) {
-        HardwarePart part = hardwarePartRepository.findById(partId)
-                .orElseThrow(() -> new RuntimeException("HardwarePart not found with id: " + partId));
-        part.setStatus("accepted");
-        part.setAcceptedAt(LocalDateTime.now());
-        return hardwarePartRepository.save(part);
-    }
-
     public HardwarePart markPartRepaired(Long partId) {
-        HardwarePart part = hardwarePartRepository.findById(partId)
-                .orElseThrow(() -> new RuntimeException("HardwarePart not found with id: " + partId));
+        HardwarePart part = findRequiredPart(partId);
         part.setStatus("repaired");
         part.setRepaired(true);
         part.setRepairedAt(LocalDateTime.now());
@@ -114,8 +109,7 @@ public class HardwarePartService {
     }
 
     public HardwarePart markPartNotRepairable(Long partId) {
-        HardwarePart part = hardwarePartRepository.findById(partId)
-                .orElseThrow(() -> new RuntimeException("HardwarePart not found with id: " + partId));
+        HardwarePart part = findRequiredPart(partId);
         part.setStatus("not_repairable");
         part.setNotRepairableAt(LocalDateTime.now());
         part.setNotRepairable(true);
@@ -123,14 +117,11 @@ public class HardwarePartService {
     }
 
     public void deleteHardwarePart(Long partId) {
+        if (!hardwarePartRepository.existsById(partId)) {
+            throw new NoSuchElementException("HardwarePart not found with id: " + partId);
+        }
         hardwarePartRepository.deleteById(partId);
     }
 
-    /**
-     * Fetch part details with branch info (projection).
-     */
-    public List<PartInfoDTO> getPartDetails() {
-        return hardwarePartRepository.fetchPartDetails();
-    }
 }
 

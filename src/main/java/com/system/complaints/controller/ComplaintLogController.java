@@ -5,17 +5,13 @@ import com.system.complaints.dto.BulkVisitScheduleRequest.Entry;
 import com.system.complaints.dto.BulkVisitScheduleResult;
 import com.system.complaints.dto.ComplaintBranchGroupDTO;
 import com.system.complaints.model.ComplaintLog;
-import com.system.complaints.model.PendingForClosedLog;
 import com.system.complaints.model.RemarksUpdate;
 import com.system.complaints.repository.PendingForClosedLogRepository;
 import com.system.complaints.service.BulkVisitSchedulingService;
 import com.system.complaints.service.ComplaintLogService;
 import com.system.complaints.service.RemarksUpdateService;
-import com.system.complaints.service.GoogleDriveService;
-import jakarta.validation.Valid;
 import org.apache.poi.ss.usermodel.*;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
@@ -28,20 +24,19 @@ import org.springframework.web.context.request.RequestContextHolder;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.BufferedReader;
-import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.nio.charset.StandardCharsets;
-import java.sql.Date;
 import java.text.SimpleDateFormat;
-import java.time.LocalDate;
 import java.util.*;
 import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/complaints")
 public class ComplaintLogController {
+
+    private static final int MAX_COMPLAINT_PAGE_SIZE = 100;
 
     @Autowired
     private ComplaintLogService complaintLogService;
@@ -58,37 +53,6 @@ public class ComplaintLogController {
     @Autowired
     private PendingForClosedLogRepository pendingForClosedLogRepository;
 
-    @Autowired
-    private GoogleDriveService googleDriveService;
-    
-    /**
-     * Upload a job card for a specific complaint.
-     */
-    @PostMapping("/{id}/upload-job-card")
-    public ResponseEntity<String> uploadJobCard(
-            @PathVariable Long id,
-            @RequestParam("jobCard") MultipartFile file) {
-
-        try {
-            if (file.isEmpty()) {
-                return ResponseEntity.badRequest().body("No file selected.");
-            }
-
-            String cloudUrl = googleDriveService.uploadFile(file);
-            boolean isUpdated = complaintLogService.updateJobCardPath(id, cloudUrl);
-
-            if (isUpdated) {
-                return ResponseEntity.ok(cloudUrl);
-            } else {
-                return ResponseEntity.badRequest().body("Failed to update job card path in database.");
-            }
-        } catch (Exception e) {
-            e.printStackTrace();
-            return ResponseEntity.status(500).body("Failed to upload job card.");
-        }
-    }
-
-
     @PostMapping("/log")
     public ResponseEntity<ComplaintLog> logComplaint(@RequestBody ComplaintLog complaintLog) {
         try {
@@ -98,89 +62,6 @@ public class ComplaintLogController {
             return ResponseEntity.ok(savedLog);
         } catch (Exception e) {
             return ResponseEntity.status(500).body(null);
-        }
-    }
-
-    @GetMapping("/by-status")
-    public ResponseEntity<List<ComplaintLog>> getComplaintsByStatus(@RequestParam String complaintStatus) {
-        try {
-            return ResponseEntity.ok(complaintLogService.getComplaintsByStatus(complaintStatus));
-        } catch (Exception e) {
-            return ResponseEntity.status(500).body(null);
-        }
-    }
-
-    @PostMapping("/{id}/resolve")
-    public ResponseEntity<String> markComplaintAsResolved(
-            @PathVariable Long id,
-            @RequestBody Map<String, String> requestBody
-    ) {
-        try {
-            String staffRemarks = requestBody.get("staffRemarks");
-            String specialRemarks = requestBody.get("specialRemarks");
-            boolean ok = complaintLogService.markAsResolved(id, staffRemarks, specialRemarks);
-            return ok
-                    ? ResponseEntity.ok("Complaint updated successfully with remarks")
-                    : ResponseEntity.badRequest().body("Complaint not found or update failed");
-        } catch (Exception e) {
-            return ResponseEntity.status(500).body("Internal Server Error");
-        }
-    }
-
-    @GetMapping("/by-date-and-status")
-    public ResponseEntity<List<ComplaintLog>> getComplaintsByDateAndStatus(
-            @RequestParam String date,
-            @RequestParam String complaintStatus
-    ) {
-        try {
-            Date parsedDate = Date.valueOf(date);
-            return ResponseEntity.ok(complaintLogService.getComplaintsByDateAndStatus(parsedDate, complaintStatus));
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.badRequest().body(null);
-        } catch (Exception e) {
-            return ResponseEntity.status(500).body(null);
-        }
-    }
-
-    @GetMapping("/by-visitor")
-    public ResponseEntity<List<ComplaintLog>> getComplaintsByVisitorId(@RequestParam Long visitorId) {
-        try {
-            return ResponseEntity.ok(complaintLogService.getComplaintsByVisitorId(visitorId));
-        } catch (Exception e) {
-            return ResponseEntity.status(500).body(null);
-        }
-    }
-
-    @GetMapping("/by-visitor-null")
-    public ResponseEntity<List<ComplaintLog>> getComplaintsByNullVisitorId() {
-        try {
-            return ResponseEntity.ok(complaintLogService.getComplaintsByNullVisitorId());
-        } catch (Exception e) {
-            return ResponseEntity.status(500).body(null);
-        }
-    }
-
-    @PutMapping("/{complaintId}/assign-to-visitor")
-    public ResponseEntity<String> assignComplaintToVisitor(@PathVariable String complaintId, @RequestParam Long visitorId) {
-        try {
-            boolean ok = complaintLogService.assignComplaintToVisitor(complaintId, visitorId);
-            return ok
-                    ? ResponseEntity.ok("Complaint assigned successfully to visitor ID: " + visitorId)
-                    : ResponseEntity.badRequest().body("Failed to assign complaint to visitor. Visitor ID may not exist.");
-        } catch (Exception e) {
-            return ResponseEntity.status(500).body("Internal Server Error");
-        }
-    }
-
-    @PutMapping("/{complaintId}/unassign-visitor")
-    public ResponseEntity<String> unassignComplaintVisitor(@PathVariable String complaintId) {
-        try {
-            boolean ok = complaintLogService.unassignComplaintVisitor(complaintId);
-            return ok
-                    ? ResponseEntity.ok("Complaint unassigned successfully.")
-                    : ResponseEntity.badRequest().body("Failed to unassign complaint.");
-        } catch (Exception e) {
-            return ResponseEntity.status(500).body("Internal Server Error");
         }
     }
 
@@ -234,6 +115,15 @@ public class ComplaintLogController {
         }
     }
 
+    @PostMapping("/engineers/history/batch")
+    public ResponseEntity<Map<String, String>> getEngineerHistoryBatch(@RequestBody List<String> complaintIds) {
+        try {
+            return ResponseEntity.ok(complaintLogService.getEngineerHistoryBatch(complaintIds));
+        } catch (Exception e) {
+            return ResponseEntity.status(500).body(null);
+        }
+    }
+
     @PutMapping("/{id}")
     public ResponseEntity<ComplaintLog> updateComplaintLog(
             @PathVariable Long id,
@@ -249,22 +139,6 @@ public class ComplaintLogController {
                     .orElseGet(() -> ResponseEntity.notFound().build());
         } catch (Exception e) {
             return ResponseEntity.status(500).body(null);
-        }
-    }
-
-    @PostMapping("/{id}/update-staff-remarks")
-    public ResponseEntity<String> updateStaffRemarks(
-            @PathVariable Long id,
-            @RequestBody Map<String, String> body
-    ) {
-        try {
-            String staffRemarks = body.get("staffRemarks");
-            boolean ok = complaintLogService.updateStaffRemarks(id, staffRemarks);
-            return ok
-                    ? ResponseEntity.ok("Staff remarks updated successfully!")
-                    : ResponseEntity.badRequest().body("Failed to update staff remarks. Complaint not found.");
-        } catch (Exception e) {
-            return ResponseEntity.status(500).body("Failed to update staff remarks.");
         }
     }
 
@@ -436,7 +310,9 @@ public class ComplaintLogController {
             @RequestParam(required = false) String reportType
     ) {
         try {
-            Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "date", "id"));
+            int safePage = Math.max(page, 0);
+            int safeSize = Math.min(Math.max(size, 1), MAX_COMPLAINT_PAGE_SIZE);
+            Pageable pageable = PageRequest.of(safePage, safeSize, Sort.by(Sort.Direction.DESC, "date", "id"));
             Page<ComplaintBranchGroupDTO> resultPage =
                     "Open".equalsIgnoreCase(status)
                             ? complaintLogService.searchOpenComplaintsWithBranchFiltering(
@@ -492,29 +368,6 @@ public class ComplaintLogController {
             return ResponseEntity.status(500).body(null);
         }
     }
-
-    @PostMapping("/bulk-visit-schedule")
-    public ResponseEntity<BulkVisitScheduleResult> bulkVisitScheduleJson(
-            @Valid @RequestBody BulkVisitScheduleRequest request
-    ) {
-        try {
-            BulkVisitScheduleResult result = bulkVisitSchedulingService.bulkVisitSchedule(request);
-            messagingTemplate.convertAndSend("/topic/paginated-by-status",
-                    Map.of("action", "bulkVisitSchedule"));
-            return ResponseEntity.ok(result);
-        } catch (IllegalArgumentException iae) {
-            return ResponseEntity.badRequest().body(
-                    new BulkVisitScheduleResult(0, List.of(
-                            new BulkVisitScheduleResult.Skip("", "", iae.getMessage())
-                    )));
-        } catch (Exception e) {
-            return ResponseEntity.status(500).body(
-                    new BulkVisitScheduleResult(0, List.of(
-                            new BulkVisitScheduleResult.Skip("", "", "Internal Server Error")
-                    )));
-        }
-    }
-
 
     @PostMapping("/bulk-visit-schedule/upload")
     public ResponseEntity<Map<String, Object>> bulkVisitScheduleUpload(
