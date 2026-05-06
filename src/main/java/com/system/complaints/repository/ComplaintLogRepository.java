@@ -63,18 +63,18 @@ public interface ComplaintLogRepository extends JpaRepository<ComplaintLog, Long
     // Get today's open complaints count
     @Query(value = "SELECT COUNT(*) AS today_open_complaints " +
             "FROM complaints_log " +
-            "WHERE DATE(date) = CURDATE()",
+            "WHERE DATE(date) = :today",
             nativeQuery = true)
-    int getTodaysOpenComplaints();
+    int getTodaysOpenComplaints(@Param("today") Date today);
 
     // Get today's closed complaints count
     @Query(value = "SELECT COUNT(*) AS today_closed_complaints " +
             "FROM complaints_log " +
             "WHERE complaint_status = 'Closed' " +
             "AND closed_date IS NOT NULL " +
-            "AND DATE(closed_date) = CURDATE()",
+            "AND DATE(closed_date) = :today",
             nativeQuery = true)
-    int getTodaysClosedComplaints();
+    int getTodaysClosedComplaints(@Param("today") Date today);
 
     // Get city-wise open complaints for today
     @Query(value = "SELECT CASE " +
@@ -86,10 +86,10 @@ public interface ComplaintLogRepository extends JpaRepository<ComplaintLog, Long
             "       END AS city_group, " +
             "       COUNT(*) AS today_open_complaints " +
             "FROM complaints_log " +
-            "WHERE DATE(date) = CURDATE() " +
+            "WHERE DATE(date) = :today " +
             "GROUP BY city_group",
             nativeQuery = true)
-    List<Object[]> getCityWiseTodaysOpenComplaints();
+    List<Object[]> getCityWiseTodaysOpenComplaints(@Param("today") Date today);
 
     // Get city-wise closed complaints for today
     @Query(value = "SELECT CASE " +
@@ -103,28 +103,28 @@ public interface ComplaintLogRepository extends JpaRepository<ComplaintLog, Long
             "FROM complaints_log " +
             "WHERE complaint_status = 'Closed' " +
             "AND closed_date IS NOT NULL " +
-            "AND DATE(closed_date) = CURDATE() " +
+            "AND DATE(closed_date) = :today " +
             "GROUP BY city_group",
             nativeQuery = true)
-    List<Object[]> getCityWiseTodaysClosedComplaints();
+    List<Object[]> getCityWiseTodaysClosedComplaints(@Param("today") Date today);
 
     // Get bank-wise open complaints for today
     @Query(value = "SELECT bank_name AS bank, COUNT(*) AS today_open_complaints " +
             "FROM complaints_log " +
-            "WHERE DATE(date) = CURDATE() " +
+            "WHERE DATE(date) = :today " +
             "GROUP BY bank_name",
             nativeQuery = true)
-    List<Object[]> getBankWiseTodaysOpenComplaints();
+    List<Object[]> getBankWiseTodaysOpenComplaints(@Param("today") Date today);
 
     // Get bank-wise closed complaints for today
     @Query(value = "SELECT bank_name AS bank, COUNT(*) AS today_closed_complaints " +
             "FROM complaints_log " +
             "WHERE complaint_status = 'Closed' " +
             "AND closed_date IS NOT NULL " +
-            "AND DATE(closed_date) = CURDATE() " +
+            "AND DATE(closed_date) = :today " +
             "GROUP BY bank_name",
             nativeQuery = true)
-    List<Object[]> getBankWiseTodaysClosedComplaints();
+    List<Object[]> getBankWiseTodaysClosedComplaints(@Param("today") Date today);
 
 
     // -------------------------------------------------------------------------
@@ -354,40 +354,40 @@ public interface ComplaintLogRepository extends JpaRepository<ComplaintLog, Long
     int countAllTimeByStatus(@Param("status") String status);
 
     // For single status, today only (by complaint logged date)
-    @Query(value = "SELECT COUNT(*) FROM complaints_log WHERE DATE(date) = CURDATE() AND complaint_status = :status", nativeQuery = true)
-    int countTodayByStatus(@Param("status") String status);
+    @Query(value = "SELECT COUNT(*) FROM complaints_log WHERE DATE(date) = :today AND complaint_status = :status", nativeQuery = true)
+    int countTodayByStatus(@Param("status") String status, @Param("today") Date today);
 
     // For all complaints, all time
     @Query(value = "SELECT COUNT(*) FROM complaints_log", nativeQuery = true)
     int countAllComplaints();
 
     // For all complaints registered today (by complaint logged date)
-    @Query(value = "SELECT COUNT(*) FROM complaints_log WHERE DATE(date) = CURDATE()", nativeQuery = true)
-    int countTodaysRegistered();
+    @Query(value = "SELECT COUNT(*) FROM complaints_log WHERE DATE(date) = :today", nativeQuery = true)
+    int countTodaysRegistered(@Param("today") Date today);
 
     // For multiple statuses, all time
     @Query(value = "SELECT COUNT(*) FROM complaints_log WHERE complaint_status IN (:statuses)", nativeQuery = true)
     int countAllTimeByStatuses(@Param("statuses") List<String> statuses);
 
     // For multiple statuses, today only (by complaint logged date)
-    @Query(value = "SELECT COUNT(*) FROM complaints_log WHERE DATE(date) = CURDATE() AND complaint_status IN (:statuses)", nativeQuery = true)
-    int countTodayByStatuses(@Param("statuses") List<String> statuses);
+    @Query(value = "SELECT COUNT(*) FROM complaints_log WHERE DATE(date) = :today AND complaint_status IN (:statuses)", nativeQuery = true)
+    int countTodayByStatuses(@Param("statuses") List<String> statuses, @Param("today") Date today);
 
     // === New Methods for Correct Daily Closed Counts ===
 
     // Count of complaints opened today AND closed today (same-day closed)
     @Query(
-            value = "SELECT COUNT(*) FROM complaints_log WHERE complaint_status = 'Closed' AND DATE(date) = CURDATE() AND DATE(closed_date) = CURDATE()",
+            value = "SELECT COUNT(*) FROM complaints_log WHERE complaint_status = 'Closed' AND DATE(date) = :today AND DATE(closed_date) = :today",
             nativeQuery = true
     )
-    int countSameDayClosed();
+    int countSameDayClosed(@Param("today") Date today);
 
     // Count of complaints closed today (regardless of open date)
     @Query(
-            value = "SELECT COUNT(*) FROM complaints_log WHERE complaint_status = 'Closed' AND DATE(closed_date) = CURDATE()",
+            value = "SELECT COUNT(*) FROM complaints_log WHERE complaint_status = 'Closed' AND DATE(closed_date) = :today",
             nativeQuery = true
     )
-    int countClosedToday();
+    int countClosedToday(@Param("today") Date today);
 
     @Query(value = """
             SELECT

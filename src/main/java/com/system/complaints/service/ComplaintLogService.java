@@ -28,6 +28,7 @@
     import java.math.BigDecimal;
     import java.sql.Date;
     import java.time.LocalDate;
+    import java.time.ZoneId;
     import java.util.*;
     import java.sql.Timestamp;
     import java.util.stream.Collectors;
@@ -38,6 +39,7 @@
         private static final int DEFAULT_COMPLAINT_GROUP_PAGE_SIZE = 10;
         private static final int MAX_COMPLAINT_GROUP_PAGE_SIZE = 100;
         private static final String WAIT_FOR_APPROVAL_STATUS = "wait for approval";
+        private static final ZoneId BUSINESS_ZONE = ZoneId.of("Asia/Karachi");
 
 
         @PersistenceContext
@@ -75,7 +77,7 @@
          */
         @Scheduled(fixedRate = 3600000)
         public void updateExpiredVisitSchedules() {
-            LocalDate today = LocalDate.now();
+            LocalDate today = LocalDate.now(BUSINESS_ZONE);
             List<ComplaintLog> expiredVisits = complaintLogRepository.findByComplaintStatusAndScheduleDateBefore(
                     "Visit Schedule", Date.valueOf(today)
             );
@@ -119,6 +121,10 @@
                         ". Expected format: yyyy-MM-dd (e.g., 2024-07-01)");
                 return null;
             }
+        }
+
+        private Date todayDate() {
+            return Date.valueOf(LocalDate.now(BUSINESS_ZONE));
         }
 
 
@@ -213,6 +219,8 @@
          * Save a new complaint log, checking for repeat complaints.
          */
         public ComplaintLog saveComplaintLog(ComplaintLog complaintLog) {
+            complaintLog.setDate(todayDate());
+
             // Check if the complaint is a repeat
             boolean isRepeat = isRepeatComplaint(complaintLog);
 
@@ -426,7 +434,7 @@
                 complaint.setComplaintStatus("Visit Schedule");
 
                 // Set scheduleDate to the current date
-                Date today = Date.valueOf(LocalDate.now());
+                Date today = todayDate();
                 complaint.setScheduleDate(today);
 
                 // Log the schedule visit
@@ -663,27 +671,27 @@
                             saveComplaintHistory(existingLog.getComplaintId(), "complaintStatus", oldVal, newVal, reason);
 
                             if ("Wait For Approval".equals(newVal) && existingLog.getQuotationDate() == null) {
-                                Date autoDate = Date.valueOf(LocalDate.now());
+                                Date autoDate = todayDate();
                                 existingLog.setQuotationDate(autoDate);
                                 saveComplaintHistory(existingLog.getComplaintId(), "quotationDate", null, autoDate.toString(), "Status-triggered update");
                             }
                             if ("Approved".equals(newVal) && existingLog.getApprovedDate() == null) {
-                                Date autoDate = Date.valueOf(LocalDate.now());
+                                Date autoDate = todayDate();
                                 existingLog.setApprovedDate(autoDate);
                                 saveComplaintHistory(existingLog.getComplaintId(), "approvedDate", null, autoDate.toString(), "Status-triggered update");
                             }
                             if ("FOC".equals(newVal) && existingLog.getFocDate() == null) {
-                                Date autoDate = Date.valueOf(LocalDate.now());
+                                Date autoDate = todayDate();
                                 existingLog.setFocDate(autoDate);
                                 saveComplaintHistory(existingLog.getComplaintId(), "focDate", null, autoDate.toString(), "Status-triggered update");
                             }
                             if ("Hardware Picked".equals(newVal) && existingLog.getHardwarePickedDate() == null) {
-                                Date autoDate = Date.valueOf(LocalDate.now());
+                                Date autoDate = todayDate();
                                 existingLog.setHardwarePickedDate(autoDate);
                                 saveComplaintHistory(existingLog.getComplaintId(), "hardwarePickedDate", null, autoDate.toString(), "Status-triggered update");
                             }
                             if ("Pending For Closed".equals(newVal)) {
-                                Date autoDate = Date.valueOf(LocalDate.now());
+                                Date autoDate = todayDate();
                                 if (existingLog.getPendingForClosedDate() == null) {
                                     existingLog.setPendingForClosedDate(autoDate);
                                     saveComplaintHistory(
@@ -710,7 +718,7 @@
                                 }
                             }
                             if ("Closed".equals(newVal) && existingLog.getClosedDate() == null) {
-                                Date autoDate = Date.valueOf(LocalDate.now());
+                                Date autoDate = todayDate();
                                 existingLog.setClosedDate(autoDate);
                                 saveComplaintHistory(existingLog.getComplaintId(), "closedDate", null, autoDate.toString(), "Status-triggered update");
                             }
@@ -824,8 +832,9 @@
          */
         public Map<String, Integer> getTodaysComplaintMetrics() {
             Map<String, Integer> metrics = new HashMap<>();
-            int todayOpenComplaints = complaintLogRepository.getTodaysOpenComplaints();
-            int todayClosedComplaints = complaintLogRepository.getTodaysClosedComplaints();
+            Date today = todayDate();
+            int todayOpenComplaints = complaintLogRepository.getTodaysOpenComplaints(today);
+            int todayClosedComplaints = complaintLogRepository.getTodaysClosedComplaints(today);
 
             metrics.put("todayOpenComplaints", todayOpenComplaints);
             metrics.put("todayClosedComplaints", todayClosedComplaints);
@@ -838,9 +847,10 @@
          */
         public Map<String, Map<String, Integer>> getCityWiseTodaysComplaintMetrics() {
             Map<String, Map<String, Integer>> cityWiseMetrics = new HashMap<>();
+            Date today = todayDate();
 
             // Fetch open complaints grouped by city
-            List<Object[]> openComplaints = complaintLogRepository.getCityWiseTodaysOpenComplaints();
+            List<Object[]> openComplaints = complaintLogRepository.getCityWiseTodaysOpenComplaints(today);
             if (openComplaints != null && !openComplaints.isEmpty()) {
                 for (Object[] result : openComplaints) {
                     String city = result[0] != null ? result[0].toString().trim().toUpperCase() : "OTHERS";
@@ -852,7 +862,7 @@
             }
 
             // Fetch closed complaints grouped by city
-            List<Object[]> closedComplaints = complaintLogRepository.getCityWiseTodaysClosedComplaints();
+            List<Object[]> closedComplaints = complaintLogRepository.getCityWiseTodaysClosedComplaints(today);
             if (closedComplaints != null && !closedComplaints.isEmpty()) {
                 for (Object[] result : closedComplaints) {
                     String city = result[0] != null ? result[0].toString().trim().toUpperCase() : "OTHERS";
@@ -871,9 +881,10 @@
          */
         public Map<String, Map<String, Integer>> getBankWiseTodaysComplaintMetrics() {
             Map<String, Map<String, Integer>> bankWiseMetrics = new HashMap<>();
+            Date today = todayDate();
 
             // Fetch open complaints grouped by bank
-            List<Object[]> openComplaints = complaintLogRepository.getBankWiseTodaysOpenComplaints();
+            List<Object[]> openComplaints = complaintLogRepository.getBankWiseTodaysOpenComplaints(today);
             if (openComplaints != null && !openComplaints.isEmpty()) {
                 for (Object[] result : openComplaints) {
                     String bank = result[0] != null ? result[0].toString().trim() : "UNKNOWN";
@@ -885,7 +896,7 @@
             }
 
             // Fetch closed complaints grouped by bank
-            List<Object[]> closedComplaints = complaintLogRepository.getBankWiseTodaysClosedComplaints();
+            List<Object[]> closedComplaints = complaintLogRepository.getBankWiseTodaysClosedComplaints(today);
             if (closedComplaints != null && !closedComplaints.isEmpty()) {
                 for (Object[] result : closedComplaints) {
                     String bank = result[0] != null ? result[0].toString().trim() : "UNKNOWN";
@@ -1281,7 +1292,7 @@
                 return result;
             }
 
-            LocalDate today = LocalDate.now();
+            LocalDate today = LocalDate.now(BUSINESS_ZONE);
             Date todayDate = Date.valueOf(today);
 
             List<ComplaintLog> allComplaints = complaintLogRepository.findAll();
@@ -1398,7 +1409,7 @@
         }
 
         public Map<String, Object> getCityWiseEngineerSummary() {
-            LocalDate today = LocalDate.now();
+            LocalDate today = LocalDate.now(BUSINESS_ZONE);
             Date todayDate = Date.valueOf(today);
 
             // Use a list for majorCities if you want specific display order.
@@ -1589,6 +1600,8 @@
             return "Open"; // Fallback
         }
         public Map<String, Map<String, Integer>> getDashboardCounts() {
+            Date today = todayDate();
+
             // List of statuses for "Open"
             List<String> openStatuses = Arrays.asList(
                     "Open", "FOC", "Quotation", "Network Issue", "Visit Schedule", "Hardware Picked",
@@ -1602,38 +1615,38 @@
             // Open
             result.put("open", Map.of(
                     "overall", complaintLogRepository.countAllTimeByStatuses(openStatuses),
-                    "today", complaintLogRepository.countTodayByStatuses(openStatuses)
+                    "today", complaintLogRepository.countTodayByStatuses(openStatuses, today)
             ));
 
             // In Progress
             List<String> inProgressStatuses = Collections.singletonList("In Progress");
             result.put("inProgress", Map.of(
                     "overall", complaintLogRepository.countAllTimeByStatuses(inProgressStatuses),
-                    "today", complaintLogRepository.countTodayByStatuses(inProgressStatuses)
+                    "today", complaintLogRepository.countTodayByStatuses(inProgressStatuses, today)
             ));
 
             // Closed: "today" now means same-day closed (opened & closed today)
             result.put("closed", Map.of(
                     "overall", complaintLogRepository.countAllTimeByStatus("Closed"),
-                    "today", complaintLogRepository.countSameDayClosed() // <--- changed here
+                    "today", complaintLogRepository.countSameDayClosed(today) // <--- changed here
             ));
 
             // Approved
             result.put("approved", Map.of(
                     "overall", complaintLogRepository.countAllTimeByStatus("Approved"),
-                    "today", complaintLogRepository.countTodayByStatus("Approved")
+                    "today", complaintLogRepository.countTodayByStatus("Approved", today)
             ));
 
             // Wait For Approval
             result.put("waitForApproval", Map.of(
                     "overall", complaintLogRepository.countAllTimeByStatus("Wait For Approval"),
-                    "today", complaintLogRepository.countTodayByStatus("Wait For Approval")
+                    "today", complaintLogRepository.countTodayByStatus("Wait For Approval", today)
             ));
 
             // Pending For Closed
             result.put("pendingForClosed", Map.of(
                     "overall", complaintLogRepository.countAllTimeByStatus("Pending For Closed"),
-                    "today", complaintLogRepository.countTodayByStatus("Pending For Closed")
+                    "today", complaintLogRepository.countTodayByStatus("Pending For Closed", today)
             ));
 
             // Overall (all complaints)
@@ -1643,12 +1656,12 @@
 
             // Total Closed: "today" means all complaints closed today (regardless of open date)
             result.put("totalClosed", Map.of(
-                    "today", complaintLogRepository.countClosedToday() // <--- changed here
+                    "today", complaintLogRepository.countClosedToday(today) // <--- changed here
             ));
 
             // Today's Registered (all complaints logged today)
             result.put("todaysRegistered", Map.of(
-                    "today", complaintLogRepository.countTodaysRegistered()
+                    "today", complaintLogRepository.countTodaysRegistered(today)
             ));
 
             return result;
